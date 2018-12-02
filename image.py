@@ -4,6 +4,15 @@ import random
 import os
 from PIL import Image, ImageChops, ImageMath
 import numpy as np
+import glob
+import json
+from pprint import pprint
+
+def get_img_list(dir_list):
+    all_image_paths = []
+    for img_dir_path in dir_list:
+        all_image_paths = all_image_paths + glob.glob(img_dir_path + '/*.jpg')
+    return all_image_paths
 
 def scale_image_channel(im, c, v):
     cs = list(im.split())
@@ -16,7 +25,7 @@ def distort_image(im, hue, sat, val):
     cs = list(im.split())
     cs[1] = cs[1].point(lambda i: i * sat)
     cs[2] = cs[2].point(lambda i: i * val)
-    
+
     def change_hue(x):
         x += hue*255
         if x > 255:
@@ -32,7 +41,7 @@ def distort_image(im, hue, sat, val):
 
 def rand_scale(s):
     scale = random.uniform(1, s)
-    if(random.randint(1,10000)%2): 
+    if(random.randint(1,10000)%2):
         return scale
     return 1./scale
 
@@ -46,7 +55,7 @@ def random_distort_image(im, hue, saturation, exposure):
 def data_augmentation(img, shape, jitter, hue, saturation, exposure):
 
     ow, oh = img.size
-    
+
     dw =int(ow*jitter)
     dh =int(oh*jitter)
 
@@ -60,7 +69,7 @@ def data_augmentation(img, shape, jitter, hue, saturation, exposure):
 
     sx = float(swidth)  / ow
     sy = float(sheight) / oh
-    
+
     flip = random.randint(1,10000)%2
     cropped = img.crop( (pleft, ptop, pleft + swidth - 1, ptop + sheight - 1))
 
@@ -70,8 +79,8 @@ def data_augmentation(img, shape, jitter, hue, saturation, exposure):
     sized = cropped.resize(shape)
 
     img = random_distort_image(sized, hue, saturation, exposure)
-    
-    return img, flip, dx,dy,sx,sy 
+
+    return img, flip, dx,dy,sx,sy
 
 def fill_truth_detection(labpath, w, h, flip, dx, dy, sx, sy):
     max_boxes = 50
@@ -102,10 +111,10 @@ def fill_truth_detection(labpath, w, h, flip, dx, dy, sx, sy):
             x8 = bs[i][17]
             y8 = bs[i][18]
 
-            x0 = min(0.999, max(0, x0 * sx - dx)) 
-            y0 = min(0.999, max(0, y0 * sy - dy)) 
-            x1 = min(0.999, max(0, x1 * sx - dx)) 
-            y1 = min(0.999, max(0, y1 * sy - dy)) 
+            x0 = min(0.999, max(0, x0 * sx - dx))
+            y0 = min(0.999, max(0, y0 * sy - dy))
+            x1 = min(0.999, max(0, x1 * sx - dx))
+            y1 = min(0.999, max(0, y1 * sy - dy))
             x2 = min(0.999, max(0, x2 * sx - dx))
             y2 = min(0.999, max(0, y2 * sy - dy))
             x3 = min(0.999, max(0, x3 * sx - dx))
@@ -120,7 +129,7 @@ def fill_truth_detection(labpath, w, h, flip, dx, dy, sx, sy):
             y7 = min(0.999, max(0, y7 * sy - dy))
             x8 = min(0.999, max(0, x8 * sx - dx))
             y8 = min(0.999, max(0, y8 * sy - dy))
-            
+
             bs[i][1] = x0
             bs[i][2] = y0
             bs[i][3] = x1
@@ -139,7 +148,7 @@ def fill_truth_detection(labpath, w, h, flip, dx, dy, sx, sy):
             bs[i][16] = y7
             bs[i][17] = x8
             bs[i][18] = y8
-            
+
             label[cc] = bs[i]
             cc += 1
             if cc >= 50:
@@ -149,16 +158,16 @@ def fill_truth_detection(labpath, w, h, flip, dx, dy, sx, sy):
     return label
 
 def change_background(img, mask, bg):
-    # oh = img.height  
+    # oh = img.height
     # ow = img.width
     ow, oh = img.size
     bg = bg.resize((ow, oh)).convert('RGB')
-    
+
     imcs = list(img.split())
     bgcs = list(bg.split())
     maskcs = list(mask.split())
     fics = list(Image.new(img.mode, img.size).split())
-    
+
     for c in range(len(imcs)):
         negmask = maskcs[c].point(lambda i: 1 - i / 255)
         posmask = maskcs[c].point(lambda i: i / 255)
@@ -175,10 +184,49 @@ def load_data_detection(imgpath, shape, jitter, hue, saturation, exposure, bgpat
     img = Image.open(imgpath).convert('RGB')
     mask = Image.open(maskpath).convert('RGB')
     bg = Image.open(bgpath).convert('RGB')
-    
+
     img = change_background(img, mask, bg)
     img,flip,dx,dy,sx,sy = data_augmentation(img, shape, jitter, hue, saturation, exposure)
     ow, oh = img.size
     label = fill_truth_detection(labpath, ow, oh, flip, dx, dy, 1./sx, 1./sy)
     return img,label
 
+def load_data_detection_fat(imgpath, shape, jitter, hue, saturation, exposure):
+
+    labpath = imgpath.replace('.jpg', '.json').replace('.png','.json')
+    img = Image.open(imgpath).convert('RGB')
+    iw, ih = img.size
+
+    with open(labpath) as file:
+        label_data = json.load(file)
+
+    projected_cuboid_vertices = np.array(label_data['objects'][0]['projected_cuboid'])
+    projected_cuboid_centroid = np.array(label_data['objects'][0]['projected_cuboid_centroid'])
+    bounding_box_top_left = np.array(label_data['objects'][0]['bounding_box']['top_left'])
+    bounding_box_bottom_right = np.array(label_data['objects'][0]['bounding_box']['bottom_right'])
+
+    projected_cuboid_vertices[:,0] /= iw
+    projected_cuboid_vertices[:,1] /= ih
+
+    # pprint(projected_cuboid_centroid)
+
+    projected_cuboid_centroid[0] /= iw
+    projected_cuboid_centroid[1] /= ih
+
+    # pprint(projected_cuboid_vertices)
+    label = []
+    label.append(13)
+    label += projected_cuboid_centroid.ravel(order='C').tolist()
+    label += projected_cuboid_vertices.ravel(order='C').tolist()
+    label += [abs(bounding_box_top_left[0]-bounding_box_top_left[1])/iw, abs(bounding_box_bottom_right[0]-bounding_box_bottom_right[1])/ih]
+    label += [0, 0]
+
+    label = np.array(label)
+    ## data augmentation
+
+
+    img,flip,dx,dy,sx,sy = data_augmentation(img, shape, jitter, hue, saturation, exposure)
+    # ow, oh = img.size
+    # label = fill_truth_detection(labpath, ow, oh, flip, dx, dy, 1./sx, 1./sy)
+    # print(label.shape)
+    return img,label

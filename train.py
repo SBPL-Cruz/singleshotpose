@@ -13,13 +13,17 @@ import math
 import shutil
 from torchvision import datasets, transforms
 from torch.autograd import Variable # Useful info about autograd: http://pytorch.org/docs/master/notes/autograd.html
+import glob
 
 import dataset
-from utils import *    
+from utils import *
 from cfg import parse_cfg
 from region_loss import RegionLoss
 from darknet import Darknet
 from MeshPly import MeshPly
+import ast
+from image import get_img_list
+import scipy.io
 
 # Create new directory
 def makedirs(path):
@@ -44,15 +48,16 @@ def adjust_learning_rate(optimizer, batch):
 def train(epoch):
 
     global processed_batches
-    
+
     # Initialize timer
     t0 = time.time()
 
     # Get the dataloader for training dataset
     train_loader = torch.utils.data.DataLoader(dataset.listDataset(trainlist, shape=(init_width, init_height),
                                                             shuffle=True,
-                                                            transform=transforms.Compose([transforms.ToTensor(),]), 
-                                                            train=True, 
+                                                            transform=transforms.Compose([transforms.ToTensor(),]),
+                                                            train=True,
+                                                            type=dataset_type,
                                                             seen=model.seen,
                                                             batch_size=batch_size,
                                                             num_workers=num_workers, bg_file_names=bg_file_names),
@@ -122,7 +127,7 @@ def train(epoch):
             print('           total : %f' % (avg_time[8]/(batch_idx)))
         t1 = time.time()
     t1 = time.time()
-    return epoch * math.ceil(len(train_loader.dataset) / float(batch_size) ) + niter - 1 
+    return epoch * math.ceil(len(train_loader.dataset) / float(batch_size) ) + niter - 1
 
 def test(epoch, niter):
     def truths_length(truths):
@@ -130,7 +135,7 @@ def test(epoch, niter):
             if truths[i][1] == 0:
                 return i
 
-    # Set the module in evaluation mode (turn off dropout, batch normalization etc.)        
+    # Set the module in evaluation mode (turn off dropout, batch normalization etc.)
     model.eval()
 
     # Parameters
@@ -151,7 +156,7 @@ def test(epoch, niter):
     logging("   Testing...")
     logging("   Number of test samples: %d" % len(test_loader.dataset))
     notpredicted = 0
-    # Iterate through test examples 
+    # Iterate through test examples
     for batch_idx, (data, target) in enumerate(test_loader):
         t1 = time.time()
         # Pass the data to GPU
@@ -162,10 +167,10 @@ def test(epoch, niter):
         data = Variable(data, volatile=True)
         t2 = time.time()
         # Formward pass
-        output = model(data).data  
+        output = model(data).data
         t3 = time.time()
         # Using confidence threshold, eliminate low-confidence predictions
-        all_boxes = get_region_boxes(output, conf_thresh, num_classes, anchors, num_anchors)        
+        all_boxes = get_region_boxes(output, conf_thresh, num_classes, anchors, num_anchors)
         t4 = time.time()
         # Iterate through all batch elements
         for i in range(output.size(0)):
@@ -178,8 +183,8 @@ def test(epoch, niter):
 
             # Iterate through each ground-truth object
             for k in range(num_gts):
-                box_gt        = [truths[k][1], truths[k][2], truths[k][3], truths[k][4], truths[k][5], truths[k][6], 
-                                truths[k][7], truths[k][8], truths[k][9], truths[k][10], truths[k][11], truths[k][12], 
+                box_gt        = [truths[k][1], truths[k][2], truths[k][3], truths[k][4], truths[k][5], truths[k][6],
+                                truths[k][7], truths[k][8], truths[k][9], truths[k][10], truths[k][11], truths[k][12],
                                 truths[k][13], truths[k][14], truths[k][15], truths[k][16], truths[k][17], truths[k][18], 1.0, 1.0, truths[k][0]]
                 best_conf_est = -1
 
@@ -190,11 +195,11 @@ def test(epoch, niter):
                         box_pr        = boxes[j]
                         match         = corner_confidence9(box_gt[:18], torch.FloatTensor(boxes[j][:18]))
 
-                # Denormalize the corner predictions 
+                # Denormalize the corner predictions
                 corners2D_gt = np.array(np.reshape(box_gt[:18], [9, 2]), dtype='float32')
                 corners2D_pr = np.array(np.reshape(box_pr[:18], [9, 2]), dtype='float32')
                 corners2D_gt[:, 0] = corners2D_gt[:, 0] * im_width
-                corners2D_gt[:, 1] = corners2D_gt[:, 1] * im_height               
+                corners2D_gt[:, 1] = corners2D_gt[:, 1] * im_height
                 corners2D_pr[:, 0] = corners2D_pr[:, 0] * im_width
                 corners2D_pr[:, 1] = corners2D_pr[:, 1] * im_height
 
@@ -220,18 +225,18 @@ def test(epoch, niter):
                 # Compute pixel error
                 Rt_gt        = np.concatenate((R_gt, t_gt), axis=1)
                 Rt_pr        = np.concatenate((R_pr, t_pr), axis=1)
-                proj_2d_gt   = compute_projection(vertices, Rt_gt, internal_calibration) 
-                proj_2d_pred = compute_projection(vertices, Rt_pr, internal_calibration) 
+                proj_2d_gt   = compute_projection(vertices, Rt_gt, internal_calibration)
+                proj_2d_pred = compute_projection(vertices, Rt_pr, internal_calibration)
                 norm         = np.linalg.norm(proj_2d_gt - proj_2d_pred, axis=0)
                 pixel_dist   = np.mean(norm)
                 errs_2d.append(pixel_dist)
 
                 # Compute 3D distances
-                transform_3d_gt   = compute_transformation(vertices, Rt_gt) 
-                transform_3d_pred = compute_transformation(vertices, Rt_pr)  
+                transform_3d_gt   = compute_transformation(vertices, Rt_gt)
+                transform_3d_pred = compute_transformation(vertices, Rt_pr)
                 norm3d            = np.linalg.norm(transform_3d_gt - transform_3d_pred, axis=0)
-                vertex_dist       = np.mean(norm3d)    
-                errs_3d.append(vertex_dist)  
+                vertex_dist       = np.mean(norm3d)
+                errs_3d.append(vertex_dist)
 
                 # Sum errors
                 testing_error_trans  += trans_dist
@@ -250,7 +255,7 @@ def test(epoch, niter):
     mean_err_2d = np.mean(errs_2d)
     mean_corner_err_2d = np.mean(errs_corner2D)
     nts = float(testing_samples)
-    
+
     if testtime:
         print('-----------------------------------')
         print('  tensor to cuda : %f' % (t2 - t1))
@@ -285,8 +290,21 @@ if __name__ == "__main__":
     data_options  = read_data_cfg(datacfg)
     net_options   = parse_cfg(cfgfile)[0]
     trainlist     = data_options['train']
+    if 'type' in data_options:
+        dataset_type = data_options['type']
+    else:
+        dataset_type = 'linemod'
+
+    if dataset_type == 'linemod':
+        nsamples = file_lines(trainlist)
+    if dataset_type == 'fat':
+        trainlist = ast.literal_eval(trainlist)
+        all_image_paths = get_img_list(trainlist)
+        nsamples = len(all_image_paths)
+        trainlist = all_image_paths
+
+
     testlist      = data_options['valid']
-    nsamples      = file_lines(trainlist)
     gpus          = data_options['gpus']  # e.g. 0,1,2,3
     gpus = '0'
     meshname      = data_options['mesh']
@@ -312,14 +330,14 @@ if __name__ == "__main__":
     eps           = 1e-5
     save_interval = 10 # epoches
     dot_interval  = 70 # batches
-    best_acc      = -1 
+    best_acc      = -1
 
     # Test parameters
     conf_thresh   = 0.1
     nms_thresh    = 0.4
     iou_thresh    = 0.5
     im_width      = 640
-    im_height     = 480 
+    im_height     = 480
 
     # Specify which gpus to use
     torch.manual_seed(seed)
@@ -333,7 +351,7 @@ if __name__ == "__main__":
 
     # Model settings
     # model.load_weights(weightfile)
-    model.load_weights_until_last(weightfile) 
+    model.load_weights_until_last(weightfile)
     model.print_network()
     model.seen = 0
     region_loss.iter  = model.iter
@@ -343,7 +361,7 @@ if __name__ == "__main__":
     init_height       = model.height
     test_width        = 672
     test_height       = 672
-    init_epoch        = model.seen/nsamples 
+    init_epoch        = model.seen/nsamples
 
     # Variable to save
     training_iters          = []
@@ -356,8 +374,16 @@ if __name__ == "__main__":
     testing_accuracies      = []
 
     # Get the intrinsic camerea matrix, mesh, vertices and corners of the model
-    mesh                 = MeshPly(meshname)
-    vertices             = np.c_[np.array(mesh.vertices), np.ones((len(mesh.vertices), 1))].transpose()
+    if meshname.endswith('.ply'):
+        mesh                 = MeshPly(meshname)
+        vertices             = np.c_[np.array(mesh.vertices), np.ones((len(mesh.vertices), 1))].transpose()
+        # print(vertices)
+    elif meshname.endswith('mat'):
+        vertices = scipy.io.loadmat(meshname)['obj']
+        vertices = np.transpose(vertices[0][0][1])
+        vertices = np.c_[vertices, np.ones((np.size(vertices, 0), 1))].transpose()
+        # print(vertices)
+
     corners3D            = get_3D_corners(vertices)
     internal_calibration = get_camera_intrinsic()
 
@@ -367,8 +393,9 @@ if __name__ == "__main__":
     # Get the dataloader for test data
     test_loader = torch.utils.data.DataLoader(dataset.listDataset(testlist, shape=(test_width, test_height),
                                                                            shuffle=False,
-                                                                           transform=transforms.Compose([transforms.ToTensor(),]), 
-                                                                           train=False),
+                                                                           transform=transforms.Compose([transforms.ToTensor(),]),
+                                                                           train=False,
+                                                                           type=dataset_type),
                                              batch_size=1, shuffle=False, **kwargs)
 
     # Pass the model to GPU
@@ -391,11 +418,11 @@ if __name__ == "__main__":
         logging('evaluating ...')
         test(0, 0)
     else:
-        for epoch in range(init_epoch, max_epochs): 
+        for epoch in range(init_epoch, max_epochs):
             # TRAIN
             niter = train(epoch)
             # TEST and SAVE
-            if (epoch % 10 == 0) and (epoch is not 0): 
+            if (epoch % 10 == 0) and (epoch is not 0):
                 test(epoch, niter)
                 logging('save training stats to %s/costs.npz' % (backupdir))
                 np.savez(os.path.join(backupdir, "costs.npz"),
@@ -404,7 +431,7 @@ if __name__ == "__main__":
                     testing_iters=testing_iters,
                     testing_accuracies=testing_accuracies,
                     testing_errors_pixel=testing_errors_pixel,
-                    testing_errors_angle=testing_errors_angle) 
+                    testing_errors_angle=testing_errors_angle)
                 if (testing_accuracies[-1] > best_acc ):
                     best_acc = testing_accuracies[-1]
                     logging('best model so far!')

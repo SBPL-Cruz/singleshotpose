@@ -44,7 +44,7 @@ def valid(datacfg, cfgfile, weightfile, outfile):
     if use_cuda:
         os.environ['CUDA_VISIBLE_DEVICES'] = gpus
         torch.cuda.manual_seed(seed)
-    save            = True
+    save            = False
     testtime        = True
     use_cuda        = True
     visualize = True
@@ -217,7 +217,7 @@ def valid(datacfg, cfgfile, weightfile, outfile):
                 errs_2d.append(pixel_dist)
                 proj_corners_gt = np.transpose(compute_projection(corners3D, Rt_gt, internal_calibration))
                 proj_corners_pr = np.transpose(compute_projection(corners3D, Rt_pr, internal_calibration))
-                
+
                 if visualize:
                     # Visualize
                     plt.xlim((0, 640))
